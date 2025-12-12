@@ -7,79 +7,136 @@ from PIL import Image
 import requests
 from io import BytesIO
 
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
-plt.rcParams['axes.unicode_minus'] = False    # 用来正常显示负号
-model = mobilenet_v2.MobileNetV2(weights='imagenet')
+# --- 全局设置 ---
+# 设置 Matplotlib 字体以正确显示中文和负号
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
 
-cat_url = "https://qcloud.dpfile.com/pc/bY0KHturZh_7sd0Cle2eqGN2ajzMkSSWdzxH6AWUw2qdxBVf06W34QcwP5N5Ww6B.jpg"
-# 下载图片
-response = requests.get(cat_url)
-cat_img = Image.open(BytesIO(response.content))
-plt.figure(figsize=(8, 8))
-plt.imshow(cat_img)
-plt.axis('off')
-plt.title('测试图片：一只可爱的猫咪')
-plt.show()
+# --- 函数定义 ---
+
+def preprocess_image_from_url(url: str, target_size: tuple = (224, 224)) -> tuple:
+    """
+    从给定的URL下载图片，并进行预处理以适配MobileNetV2模型。
+
+    Args:
+        url (str): 图片的URL地址。
+        target_size (tuple): 模型输入所需的目标图片尺寸。
+
+    Returns:
+        tuple: 包含原始PIL图片对象和预处理后的numpy数组。
+               如果下载或处理失败，则返回 (None, None)。
+    """
+    try:
+        # 下载图片
+        print(f"正在从URL下载图片: {url}")
+        response = requests.get(url)
+        response.raise_for_status()  # 如果请求失败 (如 404), 则会抛出异常
+
+        # 从二进制内容中打开图片
+        original_img = Image.open(BytesIO(response.content))
+
+        # 调整图片大小并转换为numpy数组
+        resized_img = original_img.resize(target_size)
+        img_array = image.img_to_array(resized_img)
+
+        # 添加批次维度 (从(H, W, C)变为(1, H, W, C))
+        img_array = np.expand_dims(img_array, axis=0)
+
+        # 应用模型特定的预处理
+        processed_img_array = preprocess_input(img_array)
+
+        print("✅ 图片预处理完成！")
+        print(f"处理后的图片形状: {processed_img_array.shape}")
+
+        return original_img, processed_img_array
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ 图片下载失败: {e}")
+        return None, None
+    except Exception as e:
+        print(f"❌ 图片处理时发生错误: {e}")
+        return None, None
 
 
-# 调整图片大小
-cat_img_resized = cat_img.resize((224, 224))
+def get_predictions(model, processed_img_array: np.ndarray, top: int = 3) -> list:
+    """
+    使用模型对预处理后的图片进行预测。
 
-# 转换为numpy数组
-img_array = image.img_to_array(cat_img_resized)
+    Args:
+        model: 预训练的Keras模型。
+        processed_img_array (np.ndarray): 预处理后的图片数组。
+        top (int): 需要返回的最高置信度的预测数量。
 
-# 添加批次维度（从(224,224,3)变成(1,224,224,3)）
-img_array = np.expand_dims(img_array, axis=0)
+    Returns:
+        list: 解码后的预测结果列表。
+    """
+    print("\n✅ AI模型正在分析图片...")
+    predictions = model.predict(processed_img_array)
+    decoded_predictions = decode_predictions(predictions, top=top)[0]
 
-# 应用模型特定的预处理
-img_array = preprocess_input(img_array)
+    print("🎯 AI识别结果：")
+    print("=" * 40)
+    for i, (imagenet_id, label, confidence) in enumerate(decoded_predictions):
+        print(f"{i+1}. {label}: {confidence*100:.2f}% 置信度")
+    print("=" * 40)
 
-print("✅ 图片预处理完成！")
-print(f"处理后的图片形状: {img_array.shape}")
+    return decoded_predictions
 
 
-predictions = model.predict(img_array)
+def display_results(original_img: Image.Image, predictions: list):
+    """
+    使用 Matplotlib 可视化输入图片和模型的预测结果。
 
-print("✅ AI模型已完成分析！")
-print("模型正在思考这张图片是什么...")
-decoded_predictions = decode_predictions(predictions, top=3)[0]
+    Args:
+        original_img (Image.Image): 原始的PIL图片对象。
+        predictions (list): 模型的预测结果列表。
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
 
-print("🎯 AI识别结果：")
-print("=" * 40)
+    # 子图1: 显示原始图片
+    ax1.imshow(original_img)
+    ax1.set_title('输入图片')
+    ax1.axis('off')
 
-# 显示前3个预测结果
-for i, (imagenet_id, label, confidence) in enumerate(decoded_predictions):
-    print(f"{i+1}. {label}: {confidence*100:.2f}% 置信度")
+    # 子图2: 显示预测结果的条形图
+    labels = [pred[1] for pred in predictions]
+    confidences = [pred[2] * 100 for pred in predictions]
+    colors = ['#FF9999', '#66B2FF', '#99FF99']
 
-print("=" * 40)
-print("✅ 识别完成！AI认为这最可能是一只猫！")
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    bars = ax2.barh(range(len(labels)), confidences, color=colors)
+    ax2.set_yticks(range(len(labels)))
+    ax2.set_yticklabels(labels)
+    ax2.set_xlabel('置信度 (%)')
+    ax2.set_title('AI识别结果')
+    ax2.invert_yaxis()  # 反转Y轴，让最高置信度显示在最上面
 
-# 显示原始图片
-ax1.imshow(cat_img)
-ax1.set_title('输入图片')
-ax1.axis('off')
+    # 在条形图上添加置信度数值
+    for bar, confidence in zip(bars, confidences):
+        ax2.text(bar.get_width() + 1, bar.get_y() + bar.get_height() / 2,
+                 f'{confidence:.1f}%', ha='left', va='center')
 
-# 显示预测结果的条形图
-labels = [pred[1] for pred in decoded_predictions]
-confidences = [pred[2] * 100 for pred in decoded_predictions]
-colors = ['#FF9999', '#66B2FF', '#99FF99']
+    plt.tight_layout()
+    plt.show()
 
-bars = ax2.barh(range(len(labels)), confidences, color=colors)
-ax2.set_yticks(range(len(labels)))
-ax2.set_yticklabels(labels)
-ax2.set_xlabel('置信度 (%)')
-ax2.set_title('AI识别结果')
-ax2.invert_yaxis()  # 让最高置信度显示在最上面
 
-# 在条形图上添加数值标签
-for i, (bar, confidence) in enumerate(zip(bars, confidences)):
-    width = bar.get_width()
-    ax2.text(
-        width + 1, bar.get_y() + bar.get_height()/2,
-            f'{confidence:.1f}%', ha='left', va='center'
-            )
+# --- 主程序入口 ---
+if __name__ == "__main__":
+    # 1. 加载预训练模型
+    print("正在加载 MobileNetV2 模型...")
+    model = mobilenet_v2.MobileNetV2(weights='imagenet')
+    print("✅ 模型加载完成！\n")
 
-plt.tight_layout()
-plt.show()
+    # 2. 定义图片URL并进行预处理
+    cat_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/5/58/Shiba_inu_taiki.jpg/1018px-Shiba_inu_taiki.jpg"
+    original_cat_img, processed_img = preprocess_image_from_url(cat_url)
+
+    # 3. 如果图片处理成功，则进行预测和展示
+    if original_cat_img and processed_img is not None:
+        # 4. 获取预测结果
+        top_predictions = get_predictions(model, processed_img, top=3)
+
+        # 5. 可视化结果
+        print("\n✅ 正在生成结果可视化图表...")
+        display_results(original_cat_img, top_predictions)
+        print("✅ 操作完成！")
 
